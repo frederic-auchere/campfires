@@ -18,25 +18,12 @@ from scipy.ndimage import label, find_objects
 from scipy.signal import correlate2d
 import imageio
 import cv2
-from skimage.measure import regionprops
-import rectify
+from rectify import rectify
 from skimage.registration import phase_cross_correlation
 from mpl_toolkits.axes_grid1 import make_axes_locatable
-from .geometry import Point, Line
-
-rgbcolors = [[255, 0, 0],
-             [0, 255, 0],
-             [0, 0, 255],
-             [255, 255, 0],
-             [255, 0, 255],
-             [0, 255, 255],
-             [128, 0, 0],
-             [0, 128, 0],
-             [0, 0, 128],
-             [128, 128, 0],
-             [128, 0, 128],
-             [0, 128, 128]]
-ncolors = len(rgbcolors)
+from geometry import Point, Line
+import subprocess
+from event import Event
 
 
 def parabolic(cc):
@@ -199,6 +186,7 @@ class Image:
 
     def __init__(self, parent, file, idx=None):
 
+        self.dn_per_photoelectron = None
         self.file = file
         self.idx = idx
         self.parent_stack = parent
@@ -233,18 +221,22 @@ class Image:
                 data = np.float32(hdu[ext].data)
 
         if not ("inpainted" in self.file) and photons:
-            if 'HRI_EUV' in self.header['TELESCOP']:
-                # image remultiplied by exposure time
-                self.dn_per_photoelectron = 25.374 / 4 / self.header['XPOSURE']
-                # dn_per_photoelectron = 28/4
-                # photoelectron_per_photon = (13.6*911)/(3.65*174)
-                # dn_per_photon = photoelectron_per_photon*dn_per_photoelectron
+            if 'HRI_EUV' in self.header['DETECTOR']:
+                self.dn_per_photoelectron = 5.27
+                self.header['RDNOISE'] = 1.5 / self.dn_per_photoelectron
+                data *= self.header['XPOSURE']  # image remultiplied by exposure time
                 data /= self.dn_per_photoelectron
             elif 'AIA' in self.header['TELESCOP']:
                 self.dn_per_photoelectron = self.aia_gain(self.header["WAVELNTH"])
                 data /= self.dn_per_photoelectron
+                self.header['RDNOISE'] = 1.15 / self.dn_per_photoelectron
 
         return data, self.header
+
+    def noise(self, image):
+        img = np.copy(image)
+        img[img < 0] = 0
+        return np.sqrt(img + self.header['RDNOISE'] ** 2)
 
     def blobs2d(self, sigma=1, n_levels=2, detection_method='wavelets', saturation=True):
 
@@ -256,17 +248,16 @@ class Image:
 
             transform = AtrousTransform(scaling_function_class=B3spline)
             coeffs = transform(img - np.median(img[img > 0]), level=n_levels)
-            #        sigma_s = wavelets.get_noise(coeffs)
-            sigma_s = np.zeros_like(img)
             if saturation:
                 gd = np.logical_and(img > 0, img < 620)
             else:
                 gd = img > 0
-            sigma_s[gd] = np.sqrt(img[gd])
+            sigma_s = self.noise(img)
+            sigma_s[~gd] = 0
             if sigma > 0:
-                dns = [sigma] * n_levels
+                dns = [sigma,] * n_levels
                 for coeff, d, se in zip(coeffs.data[0:n_levels], dns,
-                                        transform.scaling_function_class(2).sigma_e[0:n_levels]):
+                                        coeffs.scaling_function.sigma_e()[0:n_levels]):
                     data.mask[coeff >= (d * sigma_s * se)] = False
                 # kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
                 # bad = 1 - cv2.erode(1 - np.uint8(gd), kernel, iterations=3)
@@ -276,7 +267,7 @@ class Image:
             else:
                 dns = [np.abs(sigma)] * n_levels
                 for coeff, d, se in zip(coeffs[0:n_levels], dns,
-                                        transform.scaling_function_class(2).sigma_e[0:n_levels]):
+                                        transform.scaling_function_class(2).sigma_e()[0:n_levels]):
                     data.mask[coeff >= (d * sigma_s * se)] = False
                 data.mask = ~data.mask
 
@@ -296,7 +287,7 @@ class Image:
                  events=None,
                  fov=Ellipsis,
                  flatten=False,
-                 corlorby=None,
+                 color_by=None,
                  interval=astropy.visualization.MinMaxInterval(),
                  stretch=astropy.visualization.LinearStretch()):
         data, _ = self.get()
@@ -322,13 +313,17 @@ class Image:
                     else:
                         contour = ev.rgb_contour[self.idx - ev.slc[0].start]
                     y1 = fov[0].start - ev.slc[1].start
-                    if y1 < 0: y1 = 0
+                    if y1 < 0:
+                        y1 = 0
                     y2 = fov[0].stop - ev.slc[1].start
-                    if y2 > contour.shape[0]: y2 = contour.shape[0]
+                    if y2 > contour.shape[0]:
+                        y2 = contour.shape[0]
                     x1 = fov[1].start - ev.slc[2].start
-                    if x1 < 0: x1 = 0
+                    if x1 < 0:
+                        x1 = 0
                     x2 = fov[1].stop - ev.slc[2].start
-                    if x2 > contour.shape[1]: x2 = contour.shape[1]
+                    if x2 > contour.shape[1]:
+                        x2 = contour.shape[1]
 
                     yp1 = y1 - (fov[0].start - ev.slc[1].start)
                     yp2 = y2 - (fov[0].start - ev.slc[1].start)
@@ -340,203 +335,9 @@ class Image:
                         rgb[yp1:yp2, xp1:xp2, c][mask] = contour[y1:y2, x1:x2, c][mask]
         return rgb
 
-
-class Event:
-
-    def __init__(self, parent, slc, blob, index):
-
-        """
-        index: event number as returned by label
-        xc, yc, tc: center of interval for each event on x, y & t axes (in carrington pixels)
-        projected area: area of theproject of the vent blob on the x, y plane
-        xwidth, ywidth, duration: maximum width of the event in x, y, t
-        height: altitude computed by cross correlation with AIA
-        volume: number of voxels
-        total_intensity: hum. total intensity
-        mean_intensity: hum. mean intensity
-        max_intensity: hum. maximum intensity
-        xmax, ymax, tmax: position of the maximum of intensity (in carrington pixels)
-        variance: variance of the light curve, which is the mean intensity at each time step
-        xbary, ybary, tbary: position of the intensity weighted average (barycenter)
-        barintensity: intensity at the barycenter
-        relative_variance: variance normalized to the mean of the light curve
-        x_image_coord, y_image_coord: coordinates in the original images corresponding to xmax, ymax
-        carrington_coords: hum. carrington coordinates
-        corrcoeff: correlation cofficient with AIA
-        min_segment: length of the minimal segment between two HRI and AIA LOS
-        shift: shift between HRI & AIA (in carrington pixels)
-        height_fort: height for every t
-        min_segment_fort: length of the minimal segment between two HRI and AIA LOS for every t
-        shift_fort: shift between HRI & AIA (in carrington pixels) for every t
-        corrcoeff_fort: correlation cofficient with AIA for every t
-        image_coords_fort: coordinates in the original images corresponding to xmax, ymax for every t
-        carrington_coords_fort: carrington coordinates for every t
-        """
-        self.feret_diameter = None
-        self.carrington_coords = None
-        self.relative_variance = None
-        self.xbary, self.ybary, self.tbary = None, None, None
-        self.barintensity = None
-        self.variance = None
-        self.ellipse_parameters = None
-        self.xmax, self.ymax, self.tmax = None, None, None
-        self.index = index
-        self.parent_stack = parent
-        self.slc = (slc[0],
-                    slice(slc[1].start - 1, slc[1].stop + 1),
-                    slice(slc[2].start - 1, slc[2].stop + 1))
-        data = np.full((blob.shape[0], blob.shape[1] + 2, blob.shape[2] + 2), 0)
-        mask = np.full((blob.shape[0], blob.shape[1] + 2, blob.shape[2] + 2), True)
-        self.blob = ma.masked_array(data, mask=mask)
-        self.blob.data[0:blob.shape[0],
-        1:blob.shape[1] + 1,
-        1:blob.shape[2] + 1] = blob.data
-        self.blob.mask[0:blob.shape[0],
-        1:blob.shape[1] + 1,
-        1:blob.shape[2] + 1] = blob.mask
-        self.rgbcolor = rgbcolors[self.index % ncolors]
-        self.rgb_contour = self.make_rgb_contour()
-        self.rgb_outline = self.make_rgb_contour(flatten=True)
-        self.xc, self.yc, self.tc = None, None, None
-        self.projected_area = None
-        self.xwidth = None
-        self.ywidth = None
-        self.duration = None
-        self.volume = None
-        self.total_intensity = None
-        self.mean_intensity = None
-        self.max_intensity = None
-        self.light_curve = None
-        self.self_variance = None
-        self.image_coords = (np.nan, np.nan)
-        self.carrigton_coords = (np.nan, np.nan)
-        self.stats()
-        self.score = self.get_score()
-
-        # Computed later by compute_heights
-        self.shift = (np.nan, np.nan)
-        self.height = np.nan
-        self.corrcoeff = np.nan
-        self.min_segment = np.nan
-
-        self.height_fort = np.full(parent.n_images, np.nan)
-        self.min_segment_fort = np.full(parent.n_images, np.nan)
-        self.shift_fort = np.full((parent.n_images, 2), np.nan)
-        self.corrcoeff_fort = np.full(parent.n_images, np.nan)
-        self.image_coords_fort = np.full((parent.n_images, 2), np.nan)
-        self.carrington_coords_fort = np.full((parent.n_images, 2), np.nan)
-
-    def make_rgb_contour(self, flatten=False):
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-
-        if flatten:
-            rgb_contour = np.zeros(self.blob.mask.shape[1:3] + (3,), dtype=np.uint8)
-            m = np.uint8((~self.blob.mask).sum(axis=0) > 0)
-            mask = (cv2.dilate(m, kernel) - m) == 1
-            for c in range(3):
-                rgb_contour[:, :, c][mask] = self.rgbcolor[c]
-        else:
-            rgb_contour = np.zeros(self.blob.mask.shape + (3,), dtype=np.uint8)
-
-            for i, m in enumerate(self.blob.mask):
-                m = np.uint8(~m)
-                mask = (cv2.dilate(m, kernel) - m) == 1
-                for c in range(3):
-                    rgb_contour[i, :, :, c][mask] = self.rgbcolor[c]
-
-        return rgb_contour
-
-    def get_score(self):
-        mask = (~self.blob.mask).sum(axis=0) > 0
-        relative_variance = self.parent_stack.get_relative_variance()
-        return np.mean(relative_variance[self.slc[1:]][mask])
-
-    def stats(self):
-        self.tc = (self.slc[0].start + self.slc[0].stop) / 2
-        self.yc = (self.slc[1].start + self.slc[1].stop) / 2
-        self.xc = (self.slc[2].start + self.slc[2].stop) / 2
-        self.projected_area = ((~self.blob.mask).sum(axis=0) > 0).sum()
-        self.xwidth = self.slc[2].stop - self.slc[2].start - 2
-        self.ywidth = self.slc[1].stop - self.slc[1].start - 2
-        self.volume = (~self.blob.mask).sum()
-        self.duration = self.slc[0].stop - self.slc[0].start
-        self.total_intensity = self.blob.sum()
-        self.mean_intensity = self.blob.mean()
-        self.max_intensity = self.blob.max()
-        self.tmax, self.ymax, self.xmax = np.unravel_index(np.argmax(self.blob), shape=self.blob.shape)
-        self.tmax += self.slc[0].start
-        self.ymax += self.slc[1].start
-        self.xmax += self.slc[2].start
-        self.light_curve = self.blob.mean(axis=(1, 2))
-        self.ellipse_parameters = self.ellipse_properties()
-        self.variance = self.light_curve.var()
-        t, y, x = np.indices(self.blob.shape)
-        xbary = int(round(np.sum(self.blob * x) / np.sum(self.blob)))
-        ybary = int(round(np.sum(self.blob * y) / np.sum(self.blob)))
-        tbary = int(round(np.sum(self.blob * t) / np.sum(self.blob)))
-        self.barintensity = self.blob[tbary, ybary, xbary]
-        self.xbary = self.slc[2].start + xbary
-        self.ybary = self.slc[1].start + ybary
-        self.tbary = self.slc[0].start + tbary
-        self.relative_variance = self.variance / self.light_curve.mean()
-        hd1 = self.parent_stack.images[0].header
-        transform = rectify.CarringtonTransform(hd1, radius_correction=hd1["MAPPINGR"] / astropy.constants.R_sun.value)
-        lon1 = (self.xmax - hd1["CACRPIX1"] + 1) * hd1["CACDELT1"] + hd1["CACRVAL1"]
-        lat1 = (self.ymax - hd1["CACRPIX2"] + 1) * hd1["CACDELT2"] + hd1["CACRVAL2"]
-        image_coords = transform(x=lon1, y=lat1)
-        self.image_coords = (float(image_coords[0]), float(image_coords[1]))
-        self.carrington_coords = (lon1, lat1)
-
-    def ellipse_properties(self):
-        mask = ~self.blob.mask
-        area = mask.sum(axis=(1, 2))
-        s = area.argmax()
-        props = regionprops(np.uint8(mask[s]), intensity_image=self.blob.data[s])
-        self.feret_diameter = props[0].feret_diameter_max
-        major = props[0].major_axis_length
-        if major == 0:
-            major = 1
-        minor = props[0].minor_axis_length
-        if minor == 0:
-            minor = 1
-        angle = props[0].orientation
-
-        return major, minor, angle
-
-    def isinframe(self, fov, fnum=None):
-        if fov is None:
-            isinframe = True
-        else:
-            isinframe = (self.slc[2].stop > fov[1].start) and (self.slc[2].start < fov[1].stop) and \
-                        (self.slc[1].stop > fov[0].start) and (self.slc[1].start < fov[0].stop)
-        if fnum is not None:
-            isinframe = isinframe and self.slc[0].start <= fnum < self.slc[0].stop
-        return isinframe
-
-    def get_center_at_t(self, t, position_type='bary'):
-        """ Compute the position of the center of the event at that timestep,
-        either looking at maximum intensity position or at intensity-weighted barycenter"""
-
-        if position_type == "max":
-
-            blobstart = self.slc[0].start
-            blobend = self.slc[0]
-            blobt = self.blob[t - blobstart, ...]
-            y, x = np.unravel_index(np.argmax(blobt), shape=blobt.shape)
-
-            x += self.slc[2].start
-            y += self.slc[1].start
-
-            return x, y
-
-        else:
-            print("TBD")
-            return 0, 0
-
-
 class Sequence:
 
-    def __init__(self, paths, fov=None, master=0, suffix='*carrington.fits',
+    def __init__(self, paths, fov=None, master=0, suffix='*.fits',
                  outpath=None, detection_method='wavelets'):
 
         self.dmin = None
@@ -603,19 +404,22 @@ class Sequence:
 
         self.masterstack = self.stacks[self.master]
 
-    def extract_events(self, instruments=None, sigma=5, n_levels=2, dmin=1, vmin=1, vmax=None, saturation=True):
+    def extract_events(self, instruments=None, sigma=5, n_levels=2, dmin=0, vmin=0, vmax=None, saturation=True):
         self.sigma = sigma
         self.n_levels = n_levels
         self.dmin = dmin
         if instruments is None: instruments = [self.master]
-        if type(instruments) is not list: instruments = [instruments]
+        if type(instruments) is not list:
+            instruments = [instruments]
         for instr in instruments:
             self.stacks[instr].extract_events(sigma=sigma, n_levels=n_levels, dmin=dmin, vmin=vmin, vmax=vmax,
                                               detection_method=self.detection_method, saturation=saturation)
 
     def extract_background(self, instruments=None, sigma=1, n_levels=3, dmin=0, vmin=0, vmax=None):
-        if instruments is None: instruments = [self.master]
-        if type(instruments) is not list: instruments = [instruments]
+        if instruments is None:
+            instruments = [self.master]
+        if type(instruments) is not list:
+            instruments = [instruments]
         for instr in instruments:
             self.stacks[instr].extract_background(sigma=sigma, n_levels=n_levels, dmin=dmin, vmin=vmin, vmax=vmax,
                                                   detection_method=self.detection_method)
@@ -684,8 +488,10 @@ class Sequence:
 
         sort = np.argsort([ev.relative_variance for ev in self.masterstack.events])[::-1]
         if first_n is not None:
-            if first_n > 65535: first_n = 65535
-            if first_n > sort.shape[0]: first_n = sort.shape[0]
+            if first_n > 65535:
+                first_n = 65535
+            if first_n > sort.shape[0]:
+                first_n = sort.shape[0]
             sort = sort[0:first_n]
         for idx, image in enumerate(self.masterstack.images):
             fi_out = image.file[:-5] + '_detected_regions_' + \
@@ -713,8 +519,10 @@ class Sequence:
 
         sort = np.argsort([ev.relative_variance for ev in self.masterstack.events])[::-1]
         if first_n is not None:
-            if first_n > 65535: first_n = 65535
-            if first_n > sort.shape[0]: first_n = sort.shape[0]
+            if first_n > 65535:
+                first_n = 65535
+            if first_n > sort.shape[0]:
+                first_n = sort.shape[0]
             sort = sort[0:first_n]
 
         output_names = (
@@ -1222,7 +1030,8 @@ class Sequence:
         fig.savefig(filename)
 
     def plot_statistics(self, instrument=None, full_events=False):
-        if instrument is None: instrument = self.master
+        if instrument is None:
+            instrument = self.master
         if len(self.stacks) == 0:
             self.extract_events(instrument=instrument)
 
@@ -1237,7 +1046,10 @@ class Sequence:
         fig, ax = plt.subplots(3, 3, figsize=(18, 18))
         _, hdr = self.masterstack.images[0].get()
         dt = 5.0
-        pixlength = (np.radians(hdr['CACDELT1']) * astropy.constants.R_sun.value / 1e6)
+        if 'CACDELT1' in hdr:
+            pixlength = np.radians(hdr['CACDELT1']) * astropy.constants.R_sun.value / 1e6
+        else:
+            pixlength = np.radians(hdr['CDELT1']/3600) * hdr['DSUN_OBS'] / 1e6
         pixarea = pixlength ** 2
 
         nbins = 50
@@ -1333,7 +1145,7 @@ class Sequence:
         ax[2, 1].hist(
             [ev.ellipse_parameters[0] / ev.ellipse_parameters[1] for ev in events if ev.ellipse_parameters[1] > 0],
             bins, density=True)
-        ax[2, 1].set_xscale('Linear')
+        ax[2, 1].set_xscale('linear')
         ax[2, 1].set_yscale('log')
         ax[2, 1].set_xlabel('Aspect ratio')
         ax[2, 1].set_ylabel('Probability density')
@@ -1344,7 +1156,7 @@ class Sequence:
         xmax = 1e1
         logbins = np.logspace(np.log10(xmin), np.log10(xmax), nbins)
         ax[2, 0].hist([ev.relative_variance for ev in events], logbins, density=True)
-        ax[2, 0].set_xscale('Log')
+        ax[2, 0].set_xscale('log')
         ax[2, 0].set_yscale('log')
         ax[2, 0].set_xlabel('Relative variance')
         ax[2, 0].set_ylabel('Probability density')
@@ -1360,8 +1172,10 @@ class Sequence:
         plt.ioff()
         sort = np.argsort([ev.relative_variance for ev in self.masterstack.events])[::-1]
         if first_n is not None:
-            if first_n > 65535: first_n = 65535
-            if first_n > sort.shape[0]: first_n = sort.shape[0]
+            if first_n > 65535:
+                first_n = 65535
+            if first_n > sort.shape[0]:
+                first_n = sort.shape[0]
             sort = sort[0:first_n]
         events = [self.masterstack.events[s] for s in sort]
 
@@ -1395,14 +1209,24 @@ class Sequence:
             figsize = (12, 12)
             fig, ax = plt.subplots(figsize=figsize)
             _, h = f.get()
-            lon1 = (0 - h["CACRPIX1"] + 1) * h["CACDELT1"] + h["CACRVAL1"]
-            lat1 = (0 - h["CACRPIX2"] + 1) * h["CACDELT2"] + h["CACRVAL2"]
-            lon2 = (f.parent_stack.get_min().shape[1] - 1 - h["CACRPIX1"] + 1) * h["CACDELT1"] + h["CACRVAL1"]
-            lat2 = (f.parent_stack.get_min().shape[0] - 1 - h["CACRPIX2"] + 1) * h["CACDELT2"] + h["CACRVAL2"]
+            if "CACRPIX1" in h:
+                lon1 = (0 - h["CACRPIX1"] + 1) * h["CACDELT1"] + h["CACRVAL1"]
+                lat1 = (0 - h["CACRPIX2"] + 1) * h["CACDELT2"] + h["CACRVAL2"]
+                lon2 = (f.parent_stack.get_min().shape[1] - 1 - h["CACRPIX1"] + 1) * h["CACDELT1"] + h["CACRVAL1"]
+                lat2 = (f.parent_stack.get_min().shape[0] - 1 - h["CACRPIX2"] + 1) * h["CACDELT2"] + h["CACRVAL2"]
+                x_label = 'Carrington longitude (degrees)'
+                y_label = 'Carrington latitude (degrees)'
+            else:
+                lon1 = 0
+                lon2 = h['NAXIS1']*h['CDELT1']
+                lat1 = 0
+                lat2 = h['NAXIS2']*h['CDELT2']
+                x_label = 'Solar X (arcseconds)'
+                y_label = 'Solar Y (arcseconds)'
             im = ax.imshow(rgb, origin='lower', interpolation="nearest", cmap=cmap, extent=[lon1, lon2, lat1, lat2])
 
-            ax.set_xlabel('Carrington longitude (degrees)')
-            ax.set_ylabel('Carrington latitude (degrees)')
+            ax.set_xlabel(x_label)
+            ax.set_ylabel(y_label)
 
             divider = make_axes_locatable(ax)
             cax = divider.append_axes("right", size="5%", pad=0.05)
@@ -1427,8 +1251,10 @@ class Sequence:
         events = self.masterstack.events
         sort = np.argsort([ev.relative_variance for ev in events])[::-1]
         if first_n is not None:
-            if first_n > 65535: first_n = 65535
-            if first_n > sort.shape[0]: first_n = sort.shape[0]
+            if first_n > 65535:
+                first_n = 65535
+            if first_n > sort.shape[0]:
+                first_n = sort.shape[0]
             usedsort = sort[0:first_n]
         elif indices is not None:
             usedsort = sort[indices]
@@ -1446,12 +1272,12 @@ class Sequence:
         def make_frame(images, fov=None, outframe=None, denoise=False):
             plt.ioff()
             if fov is None:
-                fig = plt.figure(constrained_layout=True, figsize=(8, 8))
+                fig = plt.figure(constrained_layout=True, figsize=(8, 8), dpi=50)
                 gs = fig.add_gridspec(1, 1,
                                       width_ratios=[1],
                                       height_ratios=[1])
             else:
-                fig = plt.figure(constrained_layout=True, figsize=(8, 5))
+                fig = plt.figure(constrained_layout=True, figsize=(8, 8), dpi=50)
                 gs = fig.add_gridspec(2, len(images),
                                       width_ratios=[1] * len(images),
                                       height_ratios=[2, 1])
@@ -1524,17 +1350,15 @@ class Sequence:
                 buf.seek(0)
                 return buf
             else:
-                inches = (bounds[2] - bounds[0]) / fig.dpi
-                if fov is None:
-                    dpi = f.parent_stack.get_min.shape[1] / inches
-                else:
-                    dpi = (fov[1].stop - fov[1].start) / inches
-                size = fig.get_size_inches() * dpi
-                size = [round(s) for s in size]
-                size[0] += size[0] % 2
-                size[1] += size[1] % 2
-                fig.set_size_inches(size[0] / dpi, size[1] / dpi)
-                fig.savefig(outframe, dpi=dpi * 6)
+                fig_width_inches, fig_height_inches = fig.get_size_inches()
+                ratio = fig_height_inches / fig_width_inches
+                fig_width_pixels, fig_height_pixels = int(fig_width_inches * fig.dpi), int(fig_height_inches * fig.dpi)
+                new_fig_width_pixels, new_fig_height_pixels = fig_width_pixels, fig_height_pixels
+                while new_fig_width_pixels % 2 == 1 or new_fig_height_pixels % 2 == 1:
+                    new_fig_width_pixels += 1
+                    new_fig_height_pixels = int(new_fig_width_pixels * ratio)
+                dpi = new_fig_width_pixels / fig_width_inches
+                fig.savefig(outframe, dpi=dpi)
 
             plt.close(fig)
             plt.ion()
@@ -1547,9 +1371,14 @@ class Sequence:
                     frames.append(imageio.imread(f))
                 imageio.mimsave(outname, frames)
             else:
-                spawnline = 'ffmpeg -r 10 -i "' + os.path.join(indir,
-                                                               '%05d.png') + '" -c:v libx264 -vf fps=25 -pix_fmt yuv420p -y "' + outname + '"'
-                os.system(spawnline)
+                subprocess.run(["ffmpeg",
+                                "-i", os.path.join(indir, '%05d.png'),
+                                "-vcodec", "libx264",
+                                "-pix_fmt", "yuv420p",
+                                "-crf", "22",
+                                "-r", "10",
+                                "-y", outname]
+                               )
 
         if center_event is not None:
             fov = (slice(int(center_event.yc) - height // 2, int(center_event.yc) + height // 2 + 1),
@@ -1652,11 +1481,16 @@ class Sequence:
 def main(paths):
     seq = Sequence(paths, fov=None)
 
-    seq.extract_events()
-    seq.events_totable(output_filename='EvtCatalog_20220308')
+    seq.extract_events(sigma=8.6, dmin=0, vmin=1)
+    seq.events_totable(output_filename='EvtCatalog_20200530')
+    seq.plot_statistics()
     seq.plot_events()
+    seq.events_tofits()
+    seq.make_movies(first_n=10)
 
 
 if __name__ == '__main__':
-    hri_path = r'C:\archive\Campfires'
+    # hri_path = r'C:\archive\Campfires\katsukawa'
+    # hri_path = r'C:\archive\Campfires\20200530\HRI174'
+    hri_path = r'C:\archive\eui\releases\2022\03\18'
     main([hri_path])
