@@ -221,15 +221,17 @@ class Image:
                 data = np.float32(hdu[ext].data)
 
         if not ("inpainted" in self.file) and photons:
-            if 'HRI_EUV' in self.header['DETECTOR']:
-                self.dn_per_photoelectron = 5.27
-                self.header['RDNOISE'] = 1.5 / self.dn_per_photoelectron
-                data *= self.header['XPOSURE']  # image remultiplied by exposure time
-                data /= self.dn_per_photoelectron
-            elif 'AIA' in self.header['TELESCOP']:
-                self.dn_per_photoelectron = self.aia_gain(self.header["WAVELNTH"])
-                data /= self.dn_per_photoelectron
-                self.header['RDNOISE'] = 1.15 / self.dn_per_photoelectron
+            if 'DETECTOR' in self.header:
+                if 'HRI_EUV' in self.header['DETECTOR']:
+                    self.dn_per_photoelectron = 5.27
+                    self.header['RDNOISE'] = 1.5 / self.dn_per_photoelectron
+                    data *= self.header['XPOSURE']  # image remultiplied by exposure time
+                    data /= self.dn_per_photoelectron
+            elif 'TELESCOP' in self.header:
+                if 'AIA' in self.header['TELESCOP']:
+                    self.dn_per_photoelectron = self.aia_gain(self.header["WAVELNTH"])
+                    data /= self.dn_per_photoelectron
+                    self.header['RDNOISE'] = 1.15 / self.dn_per_photoelectron
 
         return data, self.header
 
