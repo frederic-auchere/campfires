@@ -783,7 +783,7 @@ class Sequence:
                 c2 = Point(np.radians(lon2), np.radians(lat2), 1, rect=False)
                 l1 = Line(o1, c1)
                 l2 = Line(o2, c2)
-                _, _, m, d = l1.findClosestPoints(l2)
+                _, _, m, d = l1.find_closest_points(l2)
 
                 h = np.sqrt(m.x ** 2 + m.y ** 2 + m.z ** 2)
 
@@ -876,7 +876,7 @@ class Sequence:
                 c2 = Point(np.radians(lon2), np.radians(lat2), 1, rect=False)
                 l1 = Line(o1, c1)
                 l2 = Line(o2, c2)
-                _, _, m, d = l1.findClosestPoints(l2)
+                _, _, m, d = l1.find_closest_points(l2)
 
                 h = np.sqrt(m.x ** 2 + m.y ** 2 + m.z ** 2)
                 image_coords = transform(x=lon1, y=lat1)
