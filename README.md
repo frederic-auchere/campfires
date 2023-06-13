@@ -18,7 +18,3 @@ will take care of the other dependencies. Or if you want to be able to edit & de
 ```shell
 pip install -e .
 ```
-
-The installation process will create a `wow` executable that can be run from the command line of the virtual environment (more below):
-
-## Usage
