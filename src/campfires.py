@@ -337,7 +337,11 @@ class Image:
                         rgb[yp1:yp2, xp1:xp2, c][mask] = contour[y1:y2, x1:x2, c][mask]
         return rgb
 
+
 class Sequence:
+    """
+    A sequence of observations is made of multiple stacks
+    """
 
     def __init__(self, paths, fov=None, master=0, suffix='*.fits',
                  outpath=None, detection_method='wavelets'):
