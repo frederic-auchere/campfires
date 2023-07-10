@@ -23,7 +23,7 @@ class Point:
         Converts the point coordinates from polar to rectangular.
 
         :param lon: longitude (in radians)
-        :param lat: latitude (in radins)
+        :param lat: latitude (in radians)
         :param r: radius
         :return: 3-tuple of the rectangular coordinates
         """
@@ -56,7 +56,7 @@ class Point:
 
     def __add__(self, p):
         """
-        Adds another point. The results is defined as the point whose rectangular coordinates are the sum
+        Adds another point. The result is defined as the point whose rectangular coordinates are the sum
         of those of the two points.
 
         :param p: other point.
@@ -66,7 +66,7 @@ class Point:
 
     def __sub__(self, p):
         """
-        Subtracts another point. The results is defined as the point whose rectangular coordinates are the subtraction
+        Subtracts another point. The result is defined as the point whose rectangular coordinates are the subtraction
         of those of the two points.
 
         :param p: other Point object.
@@ -132,7 +132,7 @@ class Line:
         Computes the properties of the shortest segment jointing the line to another line.
 
         :param line: other Line object.
-        :return: 4-tuple containting:
+        :return: 4-tuple containing:
             - Point at one end of the shortest segment (belong to first line).
             - Point at other end of the shortest segment (belong to second line).
             - middle Point (average of the two ends)
