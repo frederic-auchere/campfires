@@ -22,16 +22,30 @@ ncolors = len(rgbcolors)
 
 class Event:
     """
-    Defines an 'event'
+    Represents an 'event'.
+    An event is defined as a group of voxels for which the coefficients in the first two scales of
+    an à trous wavelet transform of the input images are significant.
+    The detection can be made in 2D (i.e. frame by frame) or 3D (on a data caube, to be implemented),
+    but event are always 3D 'blobs'.
+    The wavelet coefficients at each scale are considered significant when they are greater than n times the
+    root-mean-square amplitude expected from the noise in the data, taking into account Poisson statistics.
+    The thresholding of the wavelet coefficients in each image results in a binary cube.
+    The 6-connected voxels of the binary cube are clustered into numbered regions. Each region defines an event.
+    For each event, physically relevant parameters are computed, such as projected area, duration, and the parameters of
+    the ellipse of the same second moments.
     """
     @classmethod
     def from_csv(cls):
-        return cls()
+        """
+        Instantiates an object from a CSV file.
+        :return: an event object
+        """
+        raise NotImplementedError
 
     def __init__(self, parent, slc, blob, index):
 
         """
-        index: event number as returned by label
+        index: event number, as returned by label
         xc, yc, tc: center of interval for each event on x, y & t axes (in carrington pixels)
         projected area: area of theproject of the vent blob on the x, y plane
         xwidth, ywidth, duration: maximum width of the event in x, y, t
@@ -107,6 +121,11 @@ class Event:
         self.carrington_coords_fort = np.full((parent.n_images, 2), np.nan)
 
     def make_rgb_contour(self, flatten=False):
+        """
+        Creates a colored contour af the event
+        :param flatten: bool. If True, returns a 2D contour, flattened over the time axis.
+        :return: the contour
+        """
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
 
         if flatten:
@@ -127,11 +146,19 @@ class Event:
         return rgb_contour
 
     def get_score(self):
+        """
+        Computes the score, defined as the mean of the relative variance (variance normalized to the mean).
+
+        :return: the score
+        """
         mask = (~self.blob.mask).sum(axis=0) > 0
         relative_variance = self.parent_stack.get_relative_variance()
         return np.mean(relative_variance[self.slc[1:]][mask])
 
     def stats(self):
+        """
+        Computes the event statistics (or metrics).
+        """
         self.tc = (self.slc[0].start + self.slc[0].stop) / 2
         self.yc = (self.slc[1].start + self.slc[1].stop) / 2
         self.xc = (self.slc[2].start + self.slc[2].stop) / 2
@@ -161,7 +188,8 @@ class Event:
         self.relative_variance = self.variance / self.light_curve.mean()
         hd1 = self.parent_stack.images[0].header
         if "MAPPINGR" in hd1:
-            transform = rectify.CarringtonTransform(hd1, radius_correction=hd1["MAPPINGR"] / astropy.constants.R_sun.value)
+            transform = rectify.CarringtonTransform(hd1,
+                                                    radius_correction=hd1["MAPPINGR"] / astropy.constants.R_sun.value)
             lon1 = (self.xmax - hd1["CACRPIX1"] + 1) * hd1["CACDELT1"] + hd1["CACRVAL1"]
             lat1 = (self.ymax - hd1["CACRPIX2"] + 1) * hd1["CACDELT2"] + hd1["CACRVAL2"]
             image_coords = transform(x=lon1, y=lat1)
@@ -169,6 +197,11 @@ class Event:
             self.carrington_coords = lon1, lat1
 
     def ellipse_properties(self):
+        """
+        Computes the parameters of the elliptic approximation of the event.
+
+        :return:  3-tuple containing the major axis, minor axis and angle of the ellipse.
+        """
         mask = ~self.blob.mask
         area = mask.sum(axis=(1, 2))
         s = area.argmax()
@@ -185,6 +218,15 @@ class Event:
         return major, minor, angle
 
     def isinframe(self, fov, fnum=None):
+        """
+        Tests if the event is in the specified field of view (FOV). If a frame number is also given, returns True only
+        if the event intersects it.
+
+        :param fov: field of view
+        :param fnum: frame number
+        :return: True if the event is in the specified FOV and frame (if given).
+        """
+
         if fov is None:
             isinframe = True
         else:
@@ -195,13 +237,18 @@ class Event:
         return isinframe
 
     def get_center_at_t(self, t, position_type='bary'):
-        """ Compute the position of the center of the event at that timestep,
-        either looking at maximum intensity position or at intensity-weighted barycenter"""
+        """
+        Computes the position of the center of the event at that timestep,
+        either looking at maximum intensity position or at intensity-weighted barycenter.
+
+        :param t: timestep
+        :param position_type: must be either 'bary' or 'max'
+        :return: 2-tuple containing the (x, y) position of the event center
+        """
 
         if position_type == "max":
 
             blobstart = self.slc[0].start
-            blobend = self.slc[0]
             blobt = self.blob[t - blobstart, ...]
             y, x = np.unravel_index(np.argmax(blobt), shape=blobt.shape)
 
@@ -211,5 +258,4 @@ class Event:
             return x, y
 
         else:
-            print("TBD")
-            return 0, 0
+            raise NotImplementedError
