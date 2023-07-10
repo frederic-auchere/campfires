@@ -340,7 +340,9 @@ class Image:
 
 class Sequence:
     """
-    A sequence of observations is made of multiple stacks
+    A sequence of observations is made of one or several Stack objects. Each stack represents a series of images taken
+    by a separate instrument, e.g. one Stack for HRI_EUV, one stack for AIA, etc.
+    For each sequence, a 'master' stack is defined, which is used to synchronize the others.
     """
 
     def __init__(self, paths, fov=None, master=0, suffix='*.fits',
