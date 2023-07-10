@@ -38,6 +38,7 @@ class Event:
     def from_csv(cls):
         """
         Instantiates an object from a CSV file.
+
         :return: an event object
         """
         raise NotImplementedError
@@ -123,6 +124,7 @@ class Event:
     def make_rgb_contour(self, flatten=False):
         """
         Creates a colored contour af the event
+
         :param flatten: bool. If True, returns a 2D contour, flattened over the time axis.
         :return: the contour
         """
@@ -222,7 +224,7 @@ class Event:
         Tests if the event is in the specified field of view (FOV). If a frame number is also given, returns True only
         if the event intersects it.
 
-        :param fov: field of view
+        :param fov: 2-tuple of slices defining the field of view (in pixels)
         :param fnum: frame number
         :return: True if the event is in the specified FOV and frame (if given).
         """
