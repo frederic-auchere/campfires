@@ -25,6 +25,7 @@ from mpl_toolkits.axes_grid1 import make_axes_locatable
 import subprocess
 from event import Event
 from campfires import Image, Stack, Sequence
+import time
 from process_aia import process_aia
 from make_carrington_stack_campfires import make_carrington_stack_campfires
 
@@ -41,6 +42,29 @@ else:
     data_paths = hrieuv_data_path
 print(data_paths)
 
+
+def main_antoine():
+    t0              = time.time()
+    data_paths      = "/scratch/dolliou/test_campfire/data/2023_10_06_org_carmaps/"
+    print("starting Sequence")
+    seq = Sequence(data_paths, fov = None)
+    print("starting extract_events")
+    seq.extract_events(sigma = 3, dmin = 2, vmin = 2, compute_excluded=False)
+
+    t              = time.time() - t0
+    print(f"elapsed time {t}")
+
+    print("starting events_totable")
+    seq.events_totable(output_filename = 'EvtCatalog_20231006_excludefalse')
+    print("starting plot_statistics")
+    seq.plot_statistics()
+    print("starting plot_events")
+    seq.plot_events()
+    print("starting events_tofits")
+    seq.events_tofits()
+    print("starting make_movies")
+    seq.make_movies(first_n = 10)
+    print("End.label")
 
 def main(data_paths):
     
@@ -102,4 +126,5 @@ def main(data_paths):
 
 
 if __name__ == '__main__':
-    main(data_paths)
+    # main(data_paths)
+    main_antoine()
